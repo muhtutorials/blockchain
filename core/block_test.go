@@ -34,22 +34,22 @@ func TestBlock_EncodeAndDecode(t *testing.T) {
 	assert.Equal(t, block, decodedBlock)
 }
 
-func randomBlock(t *testing.T, prevBlockHash types.Hash, height uint32) *Block {
+func randomBlock(t *testing.T, prevHeaderHash types.Hash, height uint32) *Block {
 	privateKey := crypto.GeneratePrivateKey()
 	tx := randomTxWithSignature()
 	h := &Header{
-		Version:       1,
-		PrevBlockHash: prevBlockHash,
-		Height:        height,
-		Timestamp:     time.Now().UnixNano(),
+		Version:        1,
+		PrevHeaderHash: prevHeaderHash,
+		Height:         height,
+		Timestamp:      time.Now().UnixNano(),
 	}
 
 	block := NewBlock(h, []*Transaction{tx})
 	err := block.Sign(privateKey)
 	assert.Nil(t, err)
 
-	blockHash, err := HashBlock(block.Transactions)
-	block.Header.BlockHash = blockHash
+	transactionsHash, err := HashTransactions(block.Transactions)
+	block.Header.TransactionsHash = transactionsHash
 	assert.Nil(t, err)
 
 	return block

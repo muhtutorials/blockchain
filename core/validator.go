@@ -1,6 +1,11 @@
 package core
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrBlockAlreadyExists = errors.New("block already exists")
 
 type Validator interface {
 	ValidateBlock(*Block) error
@@ -16,26 +21,27 @@ func NewBlockValidator(bc *Blockchain) *BlockValidator {
 	}
 }
 
-func (v *BlockValidator) ValidateBlock(b *Block) error {
-	if v.bc.HasBlock(b.Height) {
-		return fmt.Errorf("chain already contains block (%d) with hash (%s)", b.Height, b.Hash(BlockHasher{}))
+func (v *BlockValidator) ValidateBlock(block *Block) error {
+	if v.bc.HasBlock(block.Height) {
+		return ErrBlockAlreadyExists
 	}
-	if b.Height != v.bc.Height()+1 {
+	if block.Height != v.bc.Height()+1 {
 		return fmt.Errorf("block (%s) with height (%d) is too high => current height (%d)",
-			b.Hash(BlockHasher{}), b.Height, v.bc.Height())
+			block.HeaderHash(HeaderHasher{}), block.Height, v.bc.Height())
 	}
 
-	prevHeader, err := v.bc.GetHeader(b.Height - 1)
+	prevBlock, err := v.bc.GetBlock(block.Height - 1)
 	if err != nil {
 		return err
 	}
-	prevBlockHash := BlockHasher{}.Hash(prevHeader)
-	if prevBlockHash != b.PrevBlockHash {
-		return fmt.Errorf("hash of the previous block is invalid")
+	prevHeaderHash := HeaderHasher{}.Hash(prevBlock.Header)
+	if prevHeaderHash != block.PrevHeaderHash {
+		return fmt.Errorf("hash of the previous block header is invalid")
 	}
 
-	if err = b.Verify(); err != nil {
+	if err = block.Verify(); err != nil {
 		return err
 	}
+
 	return nil
 }

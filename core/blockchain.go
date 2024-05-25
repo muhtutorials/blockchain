@@ -7,16 +7,17 @@ import (
 )
 
 type Blockchain struct {
-	mu        sync.RWMutex
-	headers   []*Header
-	validator Validator
-	store     Storage
+	blocksMu      sync.RWMutex
+	blocks        []*Block
+	validator     Validator
+	contractState *State
+	store         Storage
 }
 
 func NewBlockchain(genesisBlock *Block) (*Blockchain, error) {
 	bc := &Blockchain{
-		headers: []*Header{},
-		store:   NewMemoryStore(),
+		contractState: NewState(),
+		store:         NewMemoryStore(),
 	}
 	bc.validator = NewBlockValidator(bc)
 	err := bc.saveBlock(genesisBlock)
@@ -34,32 +35,42 @@ func (bc *Blockchain) AddBlock(b *Block) error {
 	if err := bc.validator.ValidateBlock(b); err != nil {
 		return err
 	}
+
+	for _, tx := range b.Transactions {
+		vm := NewVM(tx.Data, bc.contractState)
+		if err := vm.Run(); err != nil {
+			return err
+		}
+		slog.Info("Contract state:", "result", vm.contractState)
+		//slog.Info("VM:", "result", deserializeInt64(vm.stack.Pop().([]byte)))
+	}
+
 	slog.Info(
 		"adding new block",
 		"height", b.Height,
-		"hash", b.Hash(BlockHasher{}),
+		"hash", b.HeaderHash(HeaderHasher{}),
 	)
 	return bc.saveBlock(b)
 }
 
-func (bc *Blockchain) GetHeader(height uint32) (*Header, error) {
+func (bc *Blockchain) GetBlock(height uint32) (*Block, error) {
 	if height > bc.Height() {
 		return nil, fmt.Errorf("height (%d) is too high", height)
 	}
 
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
+	bc.blocksMu.Lock()
+	defer bc.blocksMu.Unlock()
 
-	return bc.headers[height], nil
+	return bc.blocks[height], nil
 }
 
 // Height returns number of blocks in the blockchain.
-// First block is the genesis block which is not included in height
+// First block is the genesis block which is not included
 func (bc *Blockchain) Height() uint32 {
-	bc.mu.RLock()
-	defer bc.mu.RUnlock()
+	bc.blocksMu.RLock()
+	defer bc.blocksMu.RUnlock()
 
-	return uint32(len(bc.headers) - 1)
+	return uint32(len(bc.blocks) - 1)
 }
 
 func (bc *Blockchain) HasBlock(height uint32) bool {
@@ -67,9 +78,9 @@ func (bc *Blockchain) HasBlock(height uint32) bool {
 }
 
 func (bc *Blockchain) saveBlock(b *Block) error {
-	bc.mu.Lock()
-	defer bc.mu.Unlock()
+	bc.blocksMu.Lock()
+	defer bc.blocksMu.Unlock()
 
-	bc.headers = append(bc.headers, b.Header)
+	bc.blocks = append(bc.blocks, b)
 	return bc.store.Put(b)
 }

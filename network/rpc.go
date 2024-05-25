@@ -7,14 +7,24 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
+	"os"
 )
+
+var logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
+	AddSource: true,
+	Level:     slog.LevelDebug,
+}))
 
 type MessageType byte
 
 const (
 	MessageTypeTransaction MessageType = iota
 	MessageTypeBlock
-	MessageTypeSyncBlocks
+	MessageTypeStatusRequest
+	MessageTypeStatus
+	MessageTypeSyncBlocksRequest
+	MessageTypeMissingBlocks
 )
 
 type RPCMessage struct {
@@ -36,12 +46,12 @@ func (m *RPCMessage) Bytes() []byte {
 }
 
 type RPC struct {
-	From    NetAddr
+	From    net.Addr
 	Payload io.Reader
 }
 
 type DecodedRPCMessage struct {
-	From    NetAddr
+	From    net.Addr
 	Payload any
 }
 
@@ -52,8 +62,6 @@ func DefaultDecodeRPCFunc(rpc RPC) (*DecodedRPCMessage, error) {
 	if err := gob.NewDecoder(rpc.Payload).Decode(msg); err != nil {
 		return nil, fmt.Errorf("failed to decode message from %s: %s", rpc.From, err)
 	}
-
-	slog.Info("received new message", "from", rpc.From)
 
 	switch msg.Header {
 	case MessageTypeTransaction:
@@ -73,6 +81,42 @@ func DefaultDecodeRPCFunc(rpc RPC) (*DecodedRPCMessage, error) {
 		return &DecodedRPCMessage{
 			From:    rpc.From,
 			Payload: block,
+		}, nil
+	case MessageTypeStatusRequest:
+		emptyMessage := new(EmptyMessage)
+		if err := emptyMessage.Decode(NewGobEmptyMessageDecoder(bytes.NewReader(msg.Body))); err != nil {
+			return nil, err
+		}
+		return &DecodedRPCMessage{
+			From:    rpc.From,
+			Payload: emptyMessage,
+		}, nil
+	case MessageTypeStatus:
+		status := new(Status)
+		if err := status.Decode(NewGobStatusDecoder(bytes.NewReader(msg.Body))); err != nil {
+			return nil, err
+		}
+		return &DecodedRPCMessage{
+			From:    rpc.From,
+			Payload: status,
+		}, nil
+	case MessageTypeSyncBlocksRequest:
+		req := new(SyncBlocksRequest)
+		if err := req.Decode(NewGobSyncBlocksRequestDecoder(bytes.NewReader(msg.Body))); err != nil {
+			return nil, err
+		}
+		return &DecodedRPCMessage{
+			From:    rpc.From,
+			Payload: req,
+		}, nil
+	case MessageTypeMissingBlocks:
+		blocks := new(Blocks)
+		if err := blocks.Decode(NewGobBlocksDecoder(bytes.NewReader(msg.Body))); err != nil {
+			return nil, err
+		}
+		return &DecodedRPCMessage{
+			From:    rpc.From,
+			Payload: blocks,
 		}, nil
 	default:
 		return nil, fmt.Errorf("invalid message header")

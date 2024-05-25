@@ -11,11 +11,11 @@ import (
 )
 
 type Header struct {
-	Version       uint32
-	BlockHash     types.Hash
-	PrevBlockHash types.Hash
-	Height        uint32
-	Timestamp     int64
+	Version          uint32
+	TransactionsHash types.Hash
+	PrevHeaderHash   types.Hash
+	Height           uint32
+	Timestamp        int64
 }
 
 func (h *Header) Bytes() []byte {
@@ -30,7 +30,6 @@ type Block struct {
 	Transactions []*Transaction
 	Validator    crypto.PublicKey
 	Signature    *crypto.Signature
-
 	// cached version of the header hash
 	headerHash types.Hash
 }
@@ -43,17 +42,17 @@ func NewBlock(h *Header, txs []*Transaction) *Block {
 }
 
 func NewBlockFromPrevHeader(prevHeader *Header, txs []*Transaction) (*Block, error) {
-	blockHash, err := HashBlock(txs)
+	transactionsHash, err := HashTransactions(txs)
 	if err != nil {
 		return nil, err
 	}
 
 	header := &Header{
-		Version:       1,
-		BlockHash:     blockHash,
-		PrevBlockHash: BlockHasher{}.Hash(prevHeader),
-		Height:        prevHeader.Height + 1,
-		Timestamp:     time.Now().UnixNano(),
+		Version:          1,
+		TransactionsHash: transactionsHash,
+		PrevHeaderHash:   HeaderHasher{}.Hash(prevHeader),
+		Height:           prevHeader.Height + 1,
+		Timestamp:        time.Now().UnixNano(),
 	}
 
 	return NewBlock(header, txs), nil
@@ -71,7 +70,7 @@ func (b *Block) Decode(dec Decoder[*Block]) error {
 	return dec.Decode(b)
 }
 
-func (b *Block) Hash(hasher Hasher[*Header]) types.Hash {
+func (b *Block) HeaderHash(hasher Hasher[*Header]) types.Hash {
 	if b.headerHash.IsZero() {
 		b.headerHash = hasher.Hash(b.Header)
 	}
@@ -103,19 +102,19 @@ func (b *Block) Verify() error {
 		}
 	}
 
-	blockHash, err := HashBlock(b.Transactions)
+	transactionsHash, err := HashTransactions(b.Transactions)
 	if err != nil {
 		return err
 	}
 
-	if blockHash != b.BlockHash {
-		return fmt.Errorf("block (%s) has an invalid hash", b.Hash(BlockHasher{}))
+	if transactionsHash != b.TransactionsHash {
+		return fmt.Errorf("block (%s) has invalid transactions hash", b.HeaderHash(HeaderHasher{}))
 	}
 
 	return nil
 }
 
-func HashBlock(txs []*Transaction) (types.Hash, error) {
+func HashTransactions(txs []*Transaction) (types.Hash, error) {
 	buf := new(bytes.Buffer)
 	for _, tx := range txs {
 		if err := tx.Encode(NewGobTransactionEncoder(buf)); err != nil {
@@ -128,11 +127,8 @@ func HashBlock(txs []*Transaction) (types.Hash, error) {
 
 func CreateGenesisBlock() *Block {
 	header := &Header{
-		Version:   1,
-		BlockHash: types.Hash{},
-		Timestamp: time.Now().UnixNano(),
+		Version: 1,
 	}
-
 	return NewBlock(header, nil)
 }
 

@@ -9,9 +9,9 @@ type Hasher[T any] interface {
 	Hash(T) types.Hash
 }
 
-type BlockHasher struct{}
+type HeaderHasher struct{}
 
-func (BlockHasher) Hash(h *Header) types.Hash {
+func (HeaderHasher) Hash(h *Header) types.Hash {
 	return sha256.Sum256(h.Bytes())
 }
 
