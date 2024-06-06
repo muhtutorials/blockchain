@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/gob"
 	"fmt"
+	"math/big"
 	"time"
 )
 
@@ -18,7 +19,7 @@ type Header struct {
 	Timestamp        int64
 }
 
-func (h *Header) Bytes() []byte {
+func (h Header) Bytes() []byte {
 	buf := new(bytes.Buffer)
 	enc := gob.NewEncoder(buf)
 	enc.Encode(h)
@@ -30,8 +31,6 @@ type Block struct {
 	Transactions []*Transaction
 	Validator    crypto.PublicKey
 	Signature    *crypto.Signature
-	// cached version of the header hash
-	headerHash types.Hash
 }
 
 func NewBlock(h *Header, txs []*Transaction) *Block {
@@ -58,10 +57,6 @@ func NewBlockFromPrevHeader(prevHeader *Header, txs []*Transaction) (*Block, err
 	return NewBlock(header, txs), nil
 }
 
-func (b *Block) AddTransaction(tx *Transaction) {
-	b.Transactions = append(b.Transactions, tx)
-}
-
 func (b *Block) Encode(enc Encoder[*Block]) error {
 	return enc.Encode(b)
 }
@@ -71,14 +66,12 @@ func (b *Block) Decode(dec Decoder[*Block]) error {
 }
 
 func (b *Block) HeaderHash(hasher Hasher[*Header]) types.Hash {
-	if b.headerHash.IsZero() {
-		b.headerHash = hasher.Hash(b.Header)
-	}
-	return b.headerHash
+	return hasher.Hash(b.Header)
 }
 
 func (b *Block) Sign(priv *crypto.PrivateKey) error {
-	sig, err := priv.Sign(b.Header.Bytes())
+	hash := b.HeaderHash(HeaderHasher{})
+	sig, err := priv.Sign(hash.Bytes())
 	if err != nil {
 		return err
 	}
@@ -92,7 +85,8 @@ func (b *Block) Verify() error {
 		return fmt.Errorf("block has no signature")
 	}
 
-	if !b.Signature.Verify(b.Validator, b.Header.Bytes()) {
+	hash := b.HeaderHash(HeaderHasher{})
+	if !b.Signature.Verify(b.Validator, hash.Bytes()) {
 		return fmt.Errorf("invalid block signature")
 	}
 
@@ -126,10 +120,22 @@ func HashTransactions(txs []*Transaction) (types.Hash, error) {
 }
 
 func CreateGenesisBlock() *Block {
-	header := &Header{
+	// transactions hash shouldn't be saved in header because of the random nonce
+	// which makes genesis blocks differ on every server
+	h := &Header{
 		Version: 1,
 	}
-	return NewBlock(header, nil)
+
+	coinBase := crypto.PublicKey{}
+	tx := NewTransaction(nil)
+	tx.From = coinBase
+	tx.To = coinBase
+	value, _ := new(big.Int).SetString("1000000000000000000", 10)
+	tx.Value = value
+
+	b := NewBlock(h, []*Transaction{tx})
+
+	return b
 }
 
 //func (h *Header) EncodeBinary(w io.Writer) error {

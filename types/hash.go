@@ -7,6 +7,10 @@ import (
 
 type Hash [32]uint8
 
+func (h Hash) Bytes() []byte {
+	return h[:]
+}
+
 func (h Hash) String() string {
 	return hex.EncodeToString(h[:])
 }

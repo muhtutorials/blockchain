@@ -15,8 +15,8 @@ var (
 )
 
 type ServerOpts struct {
-	ID                string
 	Addr              string
+	APIAddr           string
 	PrivateKey        *crypto.PrivateKey
 	SeedNodes         []string
 	Logger            *slog.Logger
@@ -29,9 +29,11 @@ type ServerOpts struct {
 
 type Server struct {
 	ServerOpts
-	isValidator bool
 	blockchain  *core.Blockchain
+	api         *API
+	isValidator bool
 	memPool     *TransactionPool
+	rpcCh       chan RPC
 	quitCh      chan struct{}
 }
 
@@ -39,6 +41,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	s := &Server{
 		ServerOpts:  opts,
 		isValidator: opts.PrivateKey != nil,
+		rpcCh:       make(chan RPC),
 		quitCh:      make(chan struct{}),
 	}
 
@@ -66,7 +69,7 @@ func NewServer(opts ServerOpts) (*Server, error) {
 		s.TransactionHasher = core.TransactionHasher{}
 	}
 
-	s.Transport = NewTCPTransport(s.Addr)
+	s.Transport = NewTCPTransport(s.Addr, s.rpcCh)
 
 	blockchain, err := core.NewBlockchain(core.CreateGenesisBlock())
 	if err != nil {
@@ -74,41 +77,49 @@ func NewServer(opts ServerOpts) (*Server, error) {
 	}
 	s.blockchain = blockchain
 
-	s.memPool = NewTransactionPool(10, s.TransactionHasher)
+	api := NewAPI(APIConfig{
+		ListenAddr: s.APIAddr,
+		Logger:     s.Logger,
+	}, blockchain, s.rpcCh)
+	s.api = api
 
 	if s.isValidator {
 		go s.validatorLoop()
 	}
 
+	s.memPool = NewTransactionPool(10, s.TransactionHasher)
+
 	return s, nil
 }
 
 func (s *Server) Start() {
-	err := s.Transport.Start()
-	if err != nil {
-		s.Logger.Error(err.Error(), "serverID", s.ID)
+	if err := s.Transport.Start(); err != nil {
+		s.Logger.Error(err.Error(), "server address", s.Addr)
 	}
+
+	s.Logger.Info("JSON API server is running", "port", s.APIAddr)
+	s.api.Start()
 
 	s.bootstrapNetwork()
 
 free:
 	for {
 		select {
-		case rpc := <-s.Transport.rpcCh:
+		case rpc := <-s.rpcCh:
 			msg, err := s.DecodeRPCFunc(rpc)
 			if err != nil {
-				s.Logger.Error(err.Error(), "serverID", s.ID)
+				s.Logger.Error(err.Error(), "server address", s.Addr)
 				continue
 			}
 			if err = s.ProcessRPCMessage(msg); err != nil {
 				if err != core.ErrBlockAlreadyExists {
-					s.Logger.Error(err.Error(), "serverID", s.ID)
+					s.Logger.Error(err.Error(), "server address", s.Addr)
 				}
 			}
 		case peer := <-s.Transport.addPeerCh:
-			err = s.sendStatusRequest(peer.conn.RemoteAddr())
+			err := s.sendStatusRequest(peer.conn.RemoteAddr())
 			if err != nil {
-				s.Logger.Error(err.Error(), "serverID", s.ID)
+				s.Logger.Error(err.Error(), "server address", s.Addr)
 			}
 		case <-s.quitCh:
 			break free
@@ -122,7 +133,7 @@ func (s *Server) bootstrapNetwork() {
 	for _, addr := range s.SeedNodes {
 		conn, err := net.Dial("tcp", addr)
 		if err != nil {
-			s.Logger.Error(err.Error(), "serverID", s.ID)
+			s.Logger.Error(err.Error(), "server address", s.Addr)
 			continue
 		}
 		s.Transport.AddPeer(conn, false)
@@ -132,7 +143,7 @@ func (s *Server) bootstrapNetwork() {
 func (s *Server) validatorLoop() {
 	for range time.Tick(defaultBlockTime) {
 		if err := s.createNewBlock(); err != nil {
-			s.Logger.Error(err.Error(), "serverID", s.ID)
+			s.Logger.Error(err.Error(), "server address", s.Addr)
 		}
 	}
 }
@@ -163,7 +174,7 @@ func (s *Server) createNewBlock() error {
 	go func() {
 		err = s.broadcastBlock(block)
 		if err != nil {
-			s.Logger.Error(err.Error(), "serverID", s.ID)
+			s.Logger.Error(err.Error(), "server address", s.Addr)
 		}
 	}()
 
@@ -182,7 +193,7 @@ func (s *Server) SyncBlocksLoop(addr net.Addr) error {
 		}
 		rpcMessage := NewRPCMessage(MessageTypeSyncBlocksRequest, buf.Bytes())
 		if err := s.Transport.SendMessage(addr, rpcMessage.Bytes()); err != nil {
-			s.Logger.Error(err.Error(), "serverID", s.ID)
+			s.Logger.Error(err.Error(), "server address", s.Addr)
 		}
 	}
 	return nil
@@ -205,10 +216,10 @@ func (s *Server) ProcessRPCMessage(msg *DecodedRPCMessage) error {
 		case MessageTypeStatusRequest:
 			return s.receiveStatusRequest(msg.From)
 		default:
-			s.Logger.Error("Unknown message type", "serverID", s.ID)
+			s.Logger.Error("Unknown message type", "server address", s.Addr)
 		}
 	default:
-		s.Logger.Error("Unknown message type", "serverID", s.ID)
+		s.Logger.Error("Unknown message type", "server address", s.Addr)
 	}
 	return nil
 }
@@ -235,7 +246,7 @@ func (s *Server) receiveTransaction(tx *core.Transaction) error {
 	go func() {
 		err := s.broadcastTransaction(tx)
 		if err != nil {
-			s.Logger.Error(err.Error(), "serverID", s.ID)
+			s.Logger.Error(err.Error(), "server address", s.Addr)
 		}
 	}()
 
@@ -259,14 +270,14 @@ func (s *Server) receiveBlock(block *core.Block) error {
 	}
 	go func() {
 		if err := s.broadcastBlock(block); err != nil {
-			s.Logger.Error(err.Error(), "serverID", s.ID)
+			s.Logger.Error(err.Error(), "server address", s.Addr)
 		}
 	}()
 	return nil
 }
 
 func (s *Server) sendStatusRequest(addr net.Addr) error {
-	s.Logger.Info("sent status request", "serverID", s.ID, "to", addr)
+	s.Logger.Info("sent status request", "server address", s.Addr, "to", addr)
 	emptyMessage := &EmptyMessage{
 		Type: MessageTypeStatusRequest,
 	}
@@ -279,9 +290,9 @@ func (s *Server) sendStatusRequest(addr net.Addr) error {
 }
 
 func (s *Server) receiveStatusRequest(addr net.Addr) error {
-	s.Logger.Info("received status request", "serverID", s.ID, "from", addr)
+	s.Logger.Info("received status request", "server address", s.Addr, "from", addr)
 	status := &Status{
-		ID:     s.ID,
+		Addr:   s.Addr,
 		Height: s.blockchain.Height(),
 	}
 	buf := new(bytes.Buffer)
@@ -294,7 +305,7 @@ func (s *Server) receiveStatusRequest(addr net.Addr) error {
 
 func (s *Server) receiveStatus(addr net.Addr, status *Status) error {
 	if status.Height <= s.blockchain.Height() {
-		s.Logger.Info("no need to sync blocks with this node", "serverID", s.ID, "from", addr)
+		s.Logger.Info("no need to sync blocks with this node", "server address", s.Addr, "from", addr)
 		return nil
 	}
 	req := &SyncBlocksRequest{
@@ -309,7 +320,7 @@ func (s *Server) receiveStatus(addr net.Addr, status *Status) error {
 }
 
 func (s *Server) receiveSyncBlocksRequest(addr net.Addr, req *SyncBlocksRequest) error {
-	s.Logger.Info("received sync blocks request", "serverID", s.ID, "from", addr)
+	s.Logger.Info("received sync blocks request", "server address", s.Addr, "from", addr)
 
 	blocks := Blocks{}
 
@@ -337,7 +348,7 @@ func (s *Server) receiveSyncBlocksRequest(addr net.Addr, req *SyncBlocksRequest)
 }
 
 func (s *Server) receiveMissingBlocks(from net.Addr, blocks *Blocks) error {
-	s.Logger.Info("received missing blocks", "serverID", s.ID, "from", from)
+	s.Logger.Info("received missing blocks", "server address", s.Addr, "from", from)
 	for _, block := range *blocks {
 		if err := s.blockchain.AddBlock(block); err != nil {
 			return err

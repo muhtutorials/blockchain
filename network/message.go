@@ -7,8 +7,8 @@ import (
 )
 
 type Status struct {
-	// ID of the server
-	ID      string
+	// listen address of the server
+	Addr    string
 	Version uint32
 	Height  uint32
 }

@@ -3,6 +3,7 @@ package network
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 )
@@ -21,10 +22,10 @@ type TCPTransport struct {
 	peers      map[net.Addr]*Peer
 }
 
-func NewTCPTransport(addr string) *TCPTransport {
+func NewTCPTransport(addr string, rpcCh chan RPC) *TCPTransport {
 	return &TCPTransport{
 		listenAddr: addr,
-		rpcCh:      make(chan RPC),
+		rpcCh:      rpcCh,
 		addPeerCh:  make(chan *Peer),
 		peers:      make(map[net.Addr]*Peer),
 	}
@@ -72,6 +73,15 @@ func (t *TCPTransport) readLoop(peer *Peer) {
 	buf := make([]byte, 1<<10) // 1024 bytes
 	for {
 		n, err := peer.conn.Read(buf)
+		if err == io.EOF {
+			err = peer.conn.Close()
+			if err != nil {
+				fmt.Printf("error closing (%s) connection: %s", peer.conn.RemoteAddr(), err)
+			}
+			fmt.Println("break!")
+			delete(t.peers, peer.conn.RemoteAddr())
+			break
+		}
 		if err != nil {
 			fmt.Printf("read error from (%s) connection: %s", peer.conn.RemoteAddr(), err)
 			continue

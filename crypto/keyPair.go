@@ -6,16 +6,18 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
+	"io"
 	"math/big"
 )
 
 type PrivateKey struct {
-	D              *big.Int
-	PublicKeyBytes []byte
+	D         *big.Int
+	publicKey []byte
 }
 
-func GeneratePrivateKey() *PrivateKey {
-	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func NewPrivateKey(r io.Reader) *PrivateKey {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), r)
 	if err != nil {
 		panic(err)
 	}
@@ -27,9 +29,13 @@ func GeneratePrivateKey() *PrivateKey {
 	}
 
 	return &PrivateKey{
-		D:              privateKey.D,
-		PublicKeyBytes: PublicKeyToBytes(publicKeyECDSA),
+		D:         privateKey.D,
+		publicKey: PublicKeyToBytes(publicKeyECDSA),
 	}
+}
+
+func GeneratePrivateKey() *PrivateKey {
+	return NewPrivateKey(rand.Reader)
 }
 
 func PublicKeyToBytes(pub *ecdsa.PublicKey) []byte {
@@ -49,15 +55,13 @@ func BytesToPublicKey(b []byte) *ecdsa.PublicKey {
 // Key return decoded private key
 func (priv PrivateKey) Key() *ecdsa.PrivateKey {
 	return &ecdsa.PrivateKey{
-		PublicKey: *BytesToPublicKey(priv.PublicKeyBytes),
+		PublicKey: *BytesToPublicKey(priv.publicKey),
 		D:         priv.D,
 	}
 }
 
 func (priv PrivateKey) PublicKey() PublicKey {
-	return PublicKey{
-		PublicKeyBytes: priv.PublicKeyBytes,
-	}
+	return priv.publicKey
 }
 
 func (priv PrivateKey) Sign(data []byte) (*Signature, error) {
@@ -69,18 +73,20 @@ func (priv PrivateKey) Sign(data []byte) (*Signature, error) {
 	return &Signature{r, s}, nil
 }
 
-type PublicKey struct {
-	PublicKeyBytes []byte
-}
+type PublicKey []byte
 
 func (pub PublicKey) Key() *ecdsa.PublicKey {
-	return BytesToPublicKey(pub.PublicKeyBytes)
+	return BytesToPublicKey(pub)
 }
 
 func (pub PublicKey) Address() types.Address {
-	hash := sha256.Sum256(pub.PublicKeyBytes)
+	hash := sha256.Sum256(pub)
 	// return last 20 elements of the array
 	return types.Address(hash[12:])
+}
+
+func (pub PublicKey) String() string {
+	return hex.EncodeToString(pub)
 }
 
 type Signature struct {
